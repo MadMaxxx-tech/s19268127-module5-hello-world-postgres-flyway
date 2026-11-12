@@ -1,0 +1,22 @@
+[Unit]
+Description=Hello World Go application
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=madmax
+Group=madmax
+WorkingDirectory=/home/madmax/hello-world/current
+ExecStart=/home/madmax/hello-world/current/hello-world
+Restart=on-failure
+RestartSec=5
+
+Environment=POSTGRES_HOST=103.80.86.41
+Environment=POSTGRES_PORT=5432
+Environment=POSTGRES_USER=postgres
+Environment=POSTGRES_PASSWORD=postgres
+Environment=POSTGRES_DB=postgres
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,33 @@
+# Собранные бинарники
+hello-world
+hello-world_*
+app
+app_*
+
+# Архивы артефактов
+*.tar.gz
+
+# Локальные файлы Go
+*.test
+*.out
+
+# Локальные секреты и окружение
+.env
+.env.*
+
+# Docker Compose runtime data
+pgdata/
+
+# SSH private keys
+id_rsa
+id_rsa.*
+id_ed25519
+id_ed25519.*
+*_ed25519
+*_rsa
+*.pem
+deploy_key
+
+# Системные файлы
+.DS_Store
+Thumbs.db

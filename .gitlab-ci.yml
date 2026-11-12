@@ -1,0 +1,157 @@
+stages:
+  - build
+  - release
+  - migrate
+  - deploy
+  - rollback
+
+variables:
+  VERSION: "1.0.${CI_PIPELINE_IID}"
+
+cache:
+  key:
+    files:
+      - go.mod
+  paths:
+    - .go-build-cache
+
+build:
+  stage: build
+  tags:
+    - deploy
+  script:
+    - export PATH="${PATH}:/usr/local/go/bin"
+    - go version
+    - export GOCACHE="${CI_PROJECT_DIR}/.go-build-cache"
+    - go mod tidy
+    - go build -ldflags "-X main.buildVersion=${VERSION}" -o "hello-world_${VERSION}" .
+  artifacts:
+    name: "hello-world_${VERSION}"
+    paths:
+      - "hello-world_${VERSION}"
+      - "db/migration/"
+    expire_in: 1 hour
+
+release:
+  stage: release
+  tags:
+    - deploy
+  needs:
+    - job: build
+      artifacts: true
+  script:
+    - test -f "hello-world_${VERSION}"
+    - test -f "db/migration/V1__init.sql"
+    - test -f "db/migration/V2__add_created_at.sql"
+    - tar -czf "hello-world_${VERSION}.tar.gz" "hello-world_${VERSION}" "db/migration"
+    - |
+      curl --fail --silent --show-error \
+        --user "${NEXUS_USER}:${NEXUS_PASSWORD}" \
+        --upload-file "hello-world_${VERSION}.tar.gz" \
+        "${NEXUS_URL}/repository/${NEXUS_REPO}/${VERSION}/hello-world_${VERSION}.tar.gz"
+
+migrate:
+  stage: migrate
+  tags:
+    - deploy
+  needs:
+    - job: release
+      artifacts: false
+  script:
+    - docker compose down --volumes --remove-orphans --timeout 30 || true
+    - docker volume rm hello-world-postgres-flyway-pgdata || true
+    - docker volume rm s19268127-module5-hello-world-postgres-flyway_pgdata || true
+    - docker compose up -d --force-recreate
+    - |
+      until docker compose exec -T db pg_isready -U postgres -d postgres; do
+        sleep 2
+      done
+    - |
+      docker run --rm \
+        --network host \
+        -v "${CI_PROJECT_DIR}/db/migration:/flyway/db/migration" \
+        -v "${CI_PROJECT_DIR}/flyway.conf:/flyway/flyway.conf" \
+        flyway/flyway \
+        -configFiles=flyway.conf \
+        migrate
+    - |
+      docker run --rm \
+        --network host \
+        -v "${CI_PROJECT_DIR}/db/migration:/flyway/db/migration" \
+        -v "${CI_PROJECT_DIR}/flyway.conf:/flyway/flyway.conf" \
+        flyway/flyway \
+        -configFiles=flyway.conf \
+        info
+
+deploy:
+  stage: deploy
+  tags:
+    - deploy
+  needs:
+    - job: release
+      artifacts: false
+  environment:
+    name: production
+    url: http://185.236.25.145:8080
+  when: manual
+  allow_failure: false
+  before_script:
+    - test -n "${SSH_PRIVATE_KEY_B64}"
+    - test -n "${VM_HOST}"
+    - test -n "${VM_USER}"
+    - test -f "deploy/hello-world.service"
+    - test -f "deploy/deploy.sh"
+    - test -f "deploy/remove.sh"
+    - echo "${SSH_PRIVATE_KEY_B64}" | base64 -d > deploy_key
+    - chmod 600 deploy_key
+  script:
+    - |
+      scp -i deploy_key -o StrictHostKeyChecking=accept-new \
+        deploy/hello-world.service \
+        deploy/deploy.sh \
+        deploy/remove.sh \
+        "${VM_USER}@${VM_HOST}:/home/${VM_USER}/"
+    - |
+      printf '%s' "${NEXUS_PASSWORD}" | \
+      ssh -i deploy_key -o StrictHostKeyChecking=accept-new \
+        "${VM_USER}@${VM_HOST}" \
+        "NEXUS_PASSWORD=\$(cat) \
+        VERSION='${VERSION}' \
+        NEXUS_URL='${NEXUS_URL}' \
+        NEXUS_USER='${NEXUS_USER}' \
+        NEXUS_REPO='${NEXUS_REPO}' \
+        /home/${VM_USER}/deploy.sh"
+    - curl --fail --silent --show-error "http://${VM_HOST}:8080/"
+  after_script:
+    - rm -f deploy_key
+
+rollback:
+  stage: rollback
+  tags:
+    - deploy
+  needs: []
+  environment:
+    name: production
+    url: http://185.236.25.145:8080
+  when: manual
+  allow_failure: false
+  before_script:
+    - test -n "${SSH_PRIVATE_KEY_B64}"
+    - test -n "${VM_HOST}"
+    - test -n "${VM_USER}"
+    - test -f "deploy/rollback.sh"
+    - echo "${SSH_PRIVATE_KEY_B64}" | base64 -d > deploy_key
+    - chmod 600 deploy_key
+  script:
+    - |
+      scp -i deploy_key -o StrictHostKeyChecking=accept-new \
+        deploy/rollback.sh \
+        "${VM_USER}@${VM_HOST}:/home/${VM_USER}/"
+    - |
+      ssh -i deploy_key -o StrictHostKeyChecking=accept-new \
+        "${VM_USER}@${VM_HOST}" \
+        "chmod +x /home/${VM_USER}/rollback.sh && \
+        /home/${VM_USER}/rollback.sh"
+    - curl --fail --silent --show-error "http://${VM_HOST}:8080/"
+  after_script:
+    - rm -f deploy_key

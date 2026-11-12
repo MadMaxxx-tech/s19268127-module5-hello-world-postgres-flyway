@@ -1,0 +1,5 @@
+CREATE TABLE IF NOT EXISTS user_info (
+    id SERIAL PRIMARY KEY,
+    name TEXT NOT NULL,
+    surname TEXT NOT NULL
+); 
