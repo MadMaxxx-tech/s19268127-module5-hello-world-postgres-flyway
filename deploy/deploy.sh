@@ -6,6 +6,8 @@ APP_USER="madmax"
 APP_HOME="/home/${APP_USER}/${APP_NAME}"
 RELEASES_DIR="${APP_HOME}/releases"
 CURRENT_LINK="${APP_HOME}/current"
+CURRENT_VERSION_FILE="${APP_HOME}/current_version"
+PREVIOUS_VERSION_FILE="${APP_HOME}/previous_version"
 SERVICE_NAME="hello-world"
 
 : "${VERSION:?VERSION is required}"
@@ -55,10 +57,21 @@ fi
 sudo cp /home/${APP_USER}/hello-world.service /etc/systemd/system/hello-world.service
 sudo systemctl daemon-reload
 
-if systemctl list-unit-files | grep -q "^${SERVICE_NAME}.service"; then
-  PREVIOUS_VERSION="$(readlink -f "${CURRENT_LINK}" 2>/dev/null | xargs basename 2>/dev/null || true)"
-else
-  PREVIOUS_VERSION=""
+PREVIOUS_VERSION=""
+
+if [ -f "${CURRENT_VERSION_FILE}" ]; then
+  CANDIDATE_VERSION="$(cat "${CURRENT_VERSION_FILE}" || true)"
+
+  if [ -n "${CANDIDATE_VERSION}" ] && \
+     [ "${CANDIDATE_VERSION}" != "${VERSION}" ] && \
+     [ -d "${RELEASES_DIR}/${CANDIDATE_VERSION}" ]; then
+    PREVIOUS_VERSION="${CANDIDATE_VERSION}"
+  fi
+fi
+
+if [ -d "${CURRENT_LINK}" ] && [ ! -L "${CURRENT_LINK}" ]; then
+  echo "Removing legacy current directory: ${CURRENT_LINK}"
+  rm -rf "${CURRENT_LINK}"
 fi
 
 ln -sfn "${RELEASE_DIR}" "${CURRENT_LINK}"
@@ -74,11 +87,14 @@ if ! sudo systemctl is-active --quiet "${SERVICE_NAME}.service"; then
   exit 1
 fi
 
-if [ -n "${PREVIOUS_VERSION:-}" ] && [ "${PREVIOUS_VERSION}" != "${VERSION}" ]; then
-  echo "${PREVIOUS_VERSION}" > "${APP_HOME}/previous_version"
+if [ -n "${PREVIOUS_VERSION}" ]; then
+  echo "${PREVIOUS_VERSION}" > "${PREVIOUS_VERSION_FILE}"
   echo "Previous stable version saved: ${PREVIOUS_VERSION}"
 else
+  rm -f "${PREVIOUS_VERSION_FILE}"
   echo "No previous stable version available yet"
 fi
+
+echo "${VERSION}" > "${CURRENT_VERSION_FILE}"
 
 echo "Deploy completed successfully"

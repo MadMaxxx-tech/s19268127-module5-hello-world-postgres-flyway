@@ -6,6 +6,7 @@ APP_USER="madmax"
 APP_HOME="/home/${APP_USER}/${APP_NAME}"
 RELEASES_DIR="${APP_HOME}/releases"
 CURRENT_LINK="${APP_HOME}/current"
+CURRENT_VERSION_FILE="${APP_HOME}/current_version"
 PREVIOUS_VERSION_FILE="${APP_HOME}/previous_version"
 SERVICE_NAME="hello-world"
 
@@ -16,8 +17,8 @@ fi
 
 PREVIOUS_VERSION="$(cat "${PREVIOUS_VERSION_FILE}")"
 
-if [ -z "${PREVIOUS_VERSION}" ]; then
-  echo "Error: previous stable version is empty" >&2
+if [ -z "${PREVIOUS_VERSION}" ] || [ "${PREVIOUS_VERSION}" = "current" ]; then
+  echo "Error: previous stable version is invalid: ${PREVIOUS_VERSION}" >&2
   exit 1
 fi
 
@@ -45,7 +46,11 @@ if [ ! -x "${PREVIOUS_RELEASE_DIR}/${APP_NAME}" ]; then
   exit 1
 fi
 
-CURRENT_VERSION="$(readlink -f "${CURRENT_LINK}" 2>/dev/null | xargs basename 2>/dev/null || true)"
+CURRENT_VERSION=""
+
+if [ -f "${CURRENT_VERSION_FILE}" ]; then
+  CURRENT_VERSION="$(cat "${CURRENT_VERSION_FILE}")"
+fi
 
 if [ "${CURRENT_VERSION}" = "${PREVIOUS_VERSION}" ]; then
   echo "Previous version is already active: ${PREVIOUS_VERSION}"
@@ -53,6 +58,11 @@ if [ "${CURRENT_VERSION}" = "${PREVIOUS_VERSION}" ]; then
 fi
 
 echo "Rolling back from ${CURRENT_VERSION:-unknown} to ${PREVIOUS_VERSION}"
+
+if [ -d "${CURRENT_LINK}" ] && [ ! -L "${CURRENT_LINK}" ]; then
+  echo "Removing legacy current directory: ${CURRENT_LINK}"
+  rm -rf "${CURRENT_LINK}"
+fi
 
 ln -sfn "${PREVIOUS_RELEASE_DIR}" "${CURRENT_LINK}"
 
@@ -65,6 +75,17 @@ if ! sudo systemctl is-active --quiet "${SERVICE_NAME}.service"; then
   sudo systemctl status "${SERVICE_NAME}.service" --no-pager || true
   exit 1
 fi
+
+if [ -f "${CURRENT_VERSION_FILE}" ]; then
+  CURRENT_DEPLOYED_VERSION="$(cat "${CURRENT_VERSION_FILE}")"
+
+  if [ -n "${CURRENT_DEPLOYED_VERSION}" ] && \
+     [ -d "${RELEASES_DIR}/${CURRENT_DEPLOYED_VERSION}" ]; then
+    echo "${CURRENT_DEPLOYED_VERSION}" > "${PREVIOUS_VERSION_FILE}"
+  fi
+fi
+
+echo "${PREVIOUS_VERSION}" > "${CURRENT_VERSION_FILE}"
 
 echo "Rollback completed successfully"
 echo "Active version: ${PREVIOUS_VERSION}"
