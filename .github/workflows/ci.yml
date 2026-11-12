@@ -21,6 +21,7 @@ env:
   NEXUS_REPO: ${{ vars.NEXUS_REPO }}
   VM_HOST: ${{ vars.VM_HOST }}
   VM_USER: ${{ vars.VM_USER }}
+  POSTGRES_VM_HOST: ${{ vars.POSTGRES_VM_HOST }}
   NEXUS_USER: ${{ vars.NEXUS_USER }}
   NEXUS_PASSWORD: ${{ secrets.NEXUS_PASSWORD }}
   SSH_PRIVATE_KEY_B64: ${{ secrets.SSH_PRIVATE_KEY_B64 }}
@@ -37,16 +38,7 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-
-      - name: Cache Go modules and build cache
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cache/go-build
-            ~/go/pkg/mod
-          key: go-${{ runner.os }}-${{ hashFiles('go.sum') }}
-          restore-keys: |
-            go-${{ runner.os }}-
+          cache: true
 
       - name: Build
         run: |
@@ -102,7 +94,7 @@ jobs:
       - name: Prepare SSH key
         run: |
           test -n "${SSH_PRIVATE_KEY_B64}"
-          test -n "${VM_HOST}"
+          test -n "${POSTGRES_VM_HOST}"
           test -n "${VM_USER}"
           echo "${SSH_PRIVATE_KEY_B64}" | base64 -d > deploy_key
           chmod 600 deploy_key
@@ -110,7 +102,7 @@ jobs:
       - name: Reset PostgreSQL state on vm 1
         run: |
           ssh -i deploy_key -o StrictHostKeyChecking=accept-new \
-            "${VM_USER}@${VM_HOST}" \
+            "${VM_USER}@${POSTGRES_VM_HOST}" \
             "cd /home/${VM_USER}/study-github/s19268127-module5-hello-world-postgres-flyway && \
             docker compose down --volumes --remove-orphans --timeout 30 || true; \
             docker volume rm hello-world-postgres-flyway-pgdata || true; \
