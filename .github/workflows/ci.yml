@@ -102,8 +102,16 @@ jobs:
             "${VM_USER}@${POSTGRES_VM_HOST}" \
             "cd /home/${VM_USER}/study-github/s19268127-module5-hello-world-postgres-flyway && \
             docker compose down --volumes --remove-orphans --timeout 30 || true; \
+            docker compose kill || true; \
+            docker compose down --volumes --remove-orphans --timeout 30 || true; \
+            docker compose ps -aq | xargs -r docker rm -f || true; \
             docker volume rm hello-world-postgres-flyway-pgdata || true; \
             docker volume rm s19268127-module5-hello-world-postgres-flyway_pgdata || true; \
+            if sudo ss -ltnp | grep -q ':5432 '; then \
+              echo 'Error: port 5432 is still in use after cleanup' >&2; \
+              sudo ss -ltnp | grep ':5432 ' >&2; \
+              exit 1; \
+            fi; \
             docker compose up -d --force-recreate && \
             until docker compose exec -T db pg_isready -U postgres -d postgres; do sleep 2; done && \
             docker run --rm --network host \
