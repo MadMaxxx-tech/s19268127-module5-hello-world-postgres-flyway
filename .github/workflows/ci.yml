@@ -88,9 +88,6 @@ jobs:
     runs-on: ubuntu-latest
     needs: release
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
       - name: Prepare SSH key
         run: |
           test -n "${SSH_PRIVATE_KEY_B64}"
@@ -99,7 +96,7 @@ jobs:
           echo "${SSH_PRIVATE_KEY_B64}" | base64 -d > deploy_key
           chmod 600 deploy_key
 
-      - name: Reset PostgreSQL state on vm 1
+      - name: Recreate PostgreSQL environment on vm 1
         run: |
           ssh -i deploy_key -o StrictHostKeyChecking=accept-new \
             "${VM_USER}@${POSTGRES_VM_HOST}" \
@@ -108,25 +105,19 @@ jobs:
             docker volume rm hello-world-postgres-flyway-pgdata || true; \
             docker volume rm s19268127-module5-hello-world-postgres-flyway_pgdata || true; \
             docker compose up -d --force-recreate && \
-            until docker compose exec -T db pg_isready -U postgres -d postgres; do sleep 2; done"
-
-      - name: Run Flyway migrate
-        run: |
-          docker run --rm --network host \
-            -v "${{ github.workspace }}/db/migration:/flyway/db/migration" \
-            -v "${{ github.workspace }}/flyway.conf:/flyway/flyway.conf" \
-            flyway/flyway \
-            -configFiles=flyway.conf \
-            migrate
-
-      - name: Show Flyway info
-        run: |
-          docker run --rm --network host \
-            -v "${{ github.workspace }}/db/migration:/flyway/db/migration" \
-            -v "${{ github.workspace }}/flyway.conf:/flyway/flyway.conf" \
-            flyway/flyway \
-            -configFiles=flyway.conf \
-            info
+            until docker compose exec -T db pg_isready -U postgres -d postgres; do sleep 2; done && \
+            docker run --rm --network host \
+              -v \"\$PWD/db/migration:/flyway/db/migration\" \
+              -v \"\$PWD/flyway.conf:/flyway/flyway.conf\" \
+              flyway/flyway \
+              -configFiles=flyway.conf \
+              migrate && \
+            docker run --rm --network host \
+              -v \"\$PWD/db/migration:/flyway/db/migration\" \
+              -v \"\$PWD/flyway.conf:/flyway/flyway.conf\" \
+              flyway/flyway \
+              -configFiles=flyway.conf \
+              info"
 
       - name: Cleanup
         if: always()
