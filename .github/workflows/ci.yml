@@ -99,6 +99,25 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Prepare SSH key
+        run: |
+          test -n "${SSH_PRIVATE_KEY_B64}"
+          test -n "${VM_HOST}"
+          test -n "${VM_USER}"
+          echo "${SSH_PRIVATE_KEY_B64}" | base64 -d > deploy_key
+          chmod 600 deploy_key
+
+      - name: Reset PostgreSQL state on vm 1
+        run: |
+          ssh -i deploy_key -o StrictHostKeyChecking=accept-new \
+            "${VM_USER}@${VM_HOST}" \
+            "cd /home/${VM_USER}/study-github/s19268127-module5-hello-world-postgres-flyway && \
+            docker compose down --volumes --remove-orphans --timeout 30 || true; \
+            docker volume rm hello-world-postgres-flyway-pgdata || true; \
+            docker volume rm s19268127-module5-hello-world-postgres-flyway_pgdata || true; \
+            docker compose up -d --force-recreate && \
+            until docker compose exec -T db pg_isready -U postgres -d postgres; do sleep 2; done"
+
       - name: Run Flyway migrate
         run: |
           docker run --rm --network host \
@@ -116,6 +135,10 @@ jobs:
             flyway/flyway \
             -configFiles=flyway.conf \
             info
+
+      - name: Cleanup
+        if: always()
+        run: rm -f deploy_key
 
   deploy:
     if: inputs.action == 'full'
