@@ -1,0 +1,198 @@
+name: CI/CD Pipeline for postgres-flyway project
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Pipeline action'
+        required: true
+        default: 'full'
+        type: choice
+        options:
+          - full
+          - rollback
+
+permissions:
+  contents: read
+
+env:
+  VERSION: 1.0.${{ github.run_number }}
+  NEXUS_URL: ${{ vars.NEXUS_URL }}
+  NEXUS_REPO: ${{ vars.NEXUS_REPO }}
+  VM_HOST: ${{ vars.VM_HOST }}
+  VM_USER: ${{ vars.VM_USER }}
+  NEXUS_USER: ${{ vars.NEXUS_USER }}
+  NEXUS_PASSWORD: ${{ secrets.NEXUS_PASSWORD }}
+  SSH_PRIVATE_KEY_B64: ${{ secrets.SSH_PRIVATE_KEY_B64 }}
+
+jobs:
+  build:
+    if: inputs.action == 'full'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Cache Go modules and build cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: go-${{ runner.os }}-${{ hashFiles('go.sum') }}
+          restore-keys: |
+            go-${{ runner.os }}-
+
+      - name: Build
+        run: |
+          go version
+          go mod tidy
+          go build -ldflags "-X main.buildVersion=${{ env.VERSION }}" \
+            -o "hello-world_${{ env.VERSION }}" .
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: hello-world-${{ env.VERSION }}
+          path: |
+            hello-world_${{ env.VERSION }}
+            db/migration/
+
+  release:
+    if: inputs.action == 'full'
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: hello-world-${{ env.VERSION }}
+
+      - name: Create archive
+        run: |
+          test -f "hello-world_${{ env.VERSION }}"
+          test -f "db/migration/V1__init.sql"
+          test -f "db/migration/V2__add_created_at.sql"
+          tar -czf "hello-world_${{ env.VERSION }}.tar.gz" \
+            "hello-world_${{ env.VERSION }}" "db/migration"
+
+      - name: Upload to Nexus
+        run: |
+          curl --fail --silent --show-error \
+            --user "${NEXUS_USER}:${NEXUS_PASSWORD}" \
+            --upload-file "hello-world_${{ env.VERSION }}.tar.gz" \
+            "${NEXUS_URL}/repository/${NEXUS_REPO}/${VERSION}/hello-world_${{ env.VERSION }}.tar.gz"
+
+  migrate:
+    if: inputs.action == 'full'
+    runs-on: ubuntu-latest
+    needs: release
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run Flyway migrate
+        run: |
+          docker run --rm --network host \
+            -v "${{ github.workspace }}/db/migration:/flyway/db/migration" \
+            -v "${{ github.workspace }}/flyway.conf:/flyway/flyway.conf" \
+            flyway/flyway \
+            -configFiles=flyway.conf \
+            migrate
+
+      - name: Show Flyway info
+        run: |
+          docker run --rm --network host \
+            -v "${{ github.workspace }}/db/migration:/flyway/db/migration" \
+            -v "${{ github.workspace }}/flyway.conf:/flyway/flyway.conf" \
+            flyway/flyway \
+            -configFiles=flyway.conf \
+            info
+
+  deploy:
+    if: inputs.action == 'full'
+    runs-on: ubuntu-latest
+    needs: migrate
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Prepare SSH key
+        run: |
+          test -n "${SSH_PRIVATE_KEY_B64}"
+          test -n "${VM_HOST}"
+          test -n "${VM_USER}"
+          echo "${SSH_PRIVATE_KEY_B64}" | base64 -d > deploy_key
+          chmod 600 deploy_key
+
+      - name: Copy deploy files to target VM
+        run: |
+          scp -i deploy_key -o StrictHostKeyChecking=accept-new \
+            deploy/hello-world.service \
+            deploy/deploy.sh \
+            deploy/remove.sh \
+            "${VM_USER}@${VM_HOST}:/home/${VM_USER}/"
+
+      - name: Run deploy script
+        run: |
+          printf '%s' "${NEXUS_PASSWORD}" | \
+          ssh -i deploy_key -o StrictHostKeyChecking=accept-new \
+            "${VM_USER}@${VM_HOST}" \
+            "NEXUS_PASSWORD=\$(cat) \
+            VERSION='${VERSION}' \
+            NEXUS_URL='${NEXUS_URL}' \
+            NEXUS_USER='${NEXUS_USER}' \
+            NEXUS_REPO='${NEXUS_REPO}' \
+            /home/${VM_USER}/deploy.sh"
+
+      - name: HTTP check
+        run: |
+          curl --fail --silent --show-error "http://${VM_HOST}:8080/"
+
+      - name: Cleanup
+        if: always()
+        run: rm -f deploy_key
+
+  rollback:
+    if: inputs.action == 'rollback'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Prepare SSH key
+        run: |
+          test -n "${SSH_PRIVATE_KEY_B64}"
+          test -n "${VM_HOST}"
+          test -n "${VM_USER}"
+          echo "${SSH_PRIVATE_KEY_B64}" | base64 -d > deploy_key
+          chmod 600 deploy_key
+
+      - name: Copy rollback script to target VM
+        run: |
+          scp -i deploy_key -o StrictHostKeyChecking=accept-new \
+            deploy/rollback.sh \
+            "${VM_USER}@${VM_HOST}:/home/${VM_USER}/"
+
+      - name: Run rollback script
+        run: |
+          ssh -i deploy_key -o StrictHostKeyChecking=accept-new \
+            "${VM_USER}@${VM_HOST}" \
+            "chmod +x /home/${VM_USER}/rollback.sh && \
+            /home/${VM_USER}/rollback.sh"
+
+      - name: HTTP check
+        run: |
+          curl --fail --silent --show-error "http://${VM_HOST}:8080/"
+
+      - name: Cleanup
+        if: always()
+        run: rm -f deploy_key
